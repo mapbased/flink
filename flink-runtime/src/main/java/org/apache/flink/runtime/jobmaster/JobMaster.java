@@ -26,10 +26,8 @@ import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.core.io.InputSplit;
-import org.apache.flink.core.io.InputSplitAssigner;
 import org.apache.flink.queryablestate.KvStateID;
 import org.apache.flink.runtime.JobException;
-import org.apache.flink.runtime.StoppingException;
 import org.apache.flink.runtime.accumulators.AccumulatorSnapshot;
 import org.apache.flink.runtime.blob.BlobWriter;
 import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
@@ -390,17 +388,6 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId> implements JobMast
 	}
 
 	@Override
-	public CompletableFuture<Acknowledge> stop(Time timeout) {
-		try {
-			executionGraph.stop();
-		} catch (StoppingException e) {
-			return FutureUtils.completedExceptionally(e);
-		}
-
-		return CompletableFuture.completedFuture(Acknowledge.get());
-	}
-
-	@Override
 	public CompletableFuture<Acknowledge> rescaleJob(
 			int newParallelism,
 			RescalingBehaviour rescalingBehaviour,
@@ -566,16 +553,12 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId> implements JobMast
 			return FutureUtils.completedExceptionally(new Exception("Cannot find execution vertex for vertex ID " + vertexID));
 		}
 
-		final InputSplitAssigner splitAssigner = vertex.getSplitAssigner();
-		if (splitAssigner == null) {
+		if (vertex.getSplitAssigner() == null) {
 			log.error("No InputSplitAssigner for vertex ID {}.", vertexID);
 			return FutureUtils.completedExceptionally(new Exception("No InputSplitAssigner for vertex ID " + vertexID));
 		}
 
-		final LogicalSlot slot = execution.getAssignedResource();
-		final int taskId = execution.getVertex().getParallelSubtaskIndex();
-		final String host = slot != null ? slot.getTaskManagerLocation().getHostname() : null;
-		final InputSplit nextInputSplit = splitAssigner.getNextInputSplit(host, taskId);
+		final InputSplit nextInputSplit = execution.getNextInputSplit();
 
 		if (log.isDebugEnabled()) {
 			log.debug("Send next input split {}.", nextInputSplit);
@@ -962,6 +945,64 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId> implements JobMast
 				}
 				return path;
 			}, getMainThreadExecutor());
+	}
+
+	@Override
+	public CompletableFuture<String> stopWithSavepoint(
+			@Nullable final String targetDirectory,
+			final boolean advanceToEndOfEventTime,
+			final Time timeout) {
+
+		final CheckpointCoordinator checkpointCoordinator = executionGraph.getCheckpointCoordinator();
+
+		if (checkpointCoordinator == null) {
+			return FutureUtils.completedExceptionally(new IllegalStateException(
+					String.format("Job %s is not a streaming job.", jobGraph.getJobID())));
+		}
+
+		if (targetDirectory == null && !checkpointCoordinator.getCheckpointStorage().hasDefaultSavepointLocation()) {
+			log.info("Trying to cancel job {} with savepoint, but no savepoint directory configured.", jobGraph.getJobID());
+
+			return FutureUtils.completedExceptionally(new IllegalStateException(
+					"No savepoint directory configured. You can either specify a directory " +
+							"while cancelling via -s :targetDirectory or configure a cluster-wide " +
+							"default via key '" + CheckpointingOptions.SAVEPOINT_DIRECTORY.key() + "'."));
+		}
+
+		final long now = System.currentTimeMillis();
+
+		// we stop the checkpoint coordinator so that we are guaranteed
+		// to have only the data of the synchronous savepoint committed.
+		// in case of failure, and if the job restarts, the coordinator
+		// will be restarted by the CheckpointCoordinatorDeActivator.
+		checkpointCoordinator.stopCheckpointScheduler();
+
+		final CompletableFuture<String> savepointFuture = checkpointCoordinator
+				.triggerSynchronousSavepoint(now, advanceToEndOfEventTime, targetDirectory)
+				.handleAsync((completedCheckpoint, throwable) -> {
+					if (throwable != null) {
+						log.info("Failed during stopping job {} with a savepoint. Reason: {}", jobGraph.getJobID(), throwable.getMessage());
+						throw new CompletionException(throwable);
+					}
+					return completedCheckpoint.getExternalPointer();
+				}, getMainThreadExecutor());
+
+		final CompletableFuture<JobStatus> terminationFuture = executionGraph
+				.getTerminationFuture()
+				.handleAsync((jobstatus, throwable) -> {
+
+					if (throwable != null) {
+						log.info("Failed during stopping job {} with a savepoint. Reason: {}", jobGraph.getJobID(), throwable.getMessage());
+						throw new CompletionException(throwable);
+					} else if(jobstatus != JobStatus.FINISHED) {
+						log.info("Failed during stopping job {} with a savepoint. Reason: Reached state {} instead of FINISHED.", jobGraph.getJobID(), jobstatus);
+						throw new CompletionException(new FlinkException("Reached state " + jobstatus + " instead of FINISHED."));
+					}
+					return jobstatus;
+				}, getMainThreadExecutor());
+
+		return savepointFuture.thenCompose((path) ->
+			terminationFuture.thenApply((jobStatus -> path)));
 	}
 
 	private void startCheckpointScheduler(final CheckpointCoordinator checkpointCoordinator) {

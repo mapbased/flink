@@ -162,25 +162,24 @@ abstract class TableTestUtil(test: TableTestBase) {
 
   /**
     * Registers a [[TableFunction]] under given name into the TableEnvironment's catalog.
-    * TODO implements this method after `registerFunction` added
     */
   def addFunction[T: TypeInformation](
       name: String,
-      function: TableFunction[T]): TableFunction[T] = ???
+      function: TableFunction[T]): Unit = getTableEnv.registerFunction(name, function)
 
   /**
     * Registers a [[ScalarFunction]] under given name into the TableEnvironment's catalog.
-    * TODO implements this method after `registerFunction` added
     */
-  def addFunction(name: String, function: ScalarFunction): Unit = ???
+  def addFunction(name: String, function: ScalarFunction): Unit = {
+    getTableEnv.registerFunction(name, function)
+  }
 
   /**
     * Registers a [[AggregateFunction]] under given name into the TableEnvironment's catalog.
-    * TODO implements this method after `registerFunction` added
     */
   def addFunction[T: TypeInformation, ACC: TypeInformation](
       name: String,
-      function: AggregateFunction[T, ACC]): Unit = ???
+      function: AggregateFunction[T, ACC]): Unit = getTableEnv.registerFunction(name, function)
 
   def verifyPlan(): Unit = {
     // TODO implements this method when supporting multi-sinks
@@ -400,6 +399,12 @@ case class StreamTableTestUtil(test: TableTestBase) extends TableTestUtil(test) 
     val calciteConfig = CalciteConfig.createBuilder(tableEnv.getConfig.getCalciteConfig)
       .replaceStreamProgram(program).build()
     tableEnv.getConfig.setCalciteConfig(calciteConfig)
+  }
+
+  def enableMiniBatch(): Unit = {
+    tableEnv.getConfig.getConf.setLong(
+      TableConfigOptions.SQL_EXEC_MINIBATCH_ALLOW_LATENCY, 1000L)
+    tableEnv.getConfig.getConf.setLong(TableConfigOptions.SQL_EXEC_MINIBATCH_SIZE, 3L)
   }
 }
 

@@ -17,14 +17,16 @@
  */
 package org.apache.flink.table.expressions
 
+import _root_.java.math.{BigDecimal => JBigDecimal}
+import _root_.java.util.{List => JList}
+
 import org.apache.flink.api.common.typeinfo.{SqlTimeTypeInfo, TypeInformation}
 import org.apache.flink.table.api._
 import org.apache.flink.table.expressions.ApiExpressionUtils._
 
-import _root_.java.util.{List => JList}
+import _root_.scala.collection.JavaConversions._
 import _root_.scala.language.implicitConversions
 import _root_.scala.util.parsing.combinator.{JavaTokenParsers, PackratParsers}
-import _root_.scala.collection.JavaConversions._
 
 /**
   * The implementation of a [[PlannerExpressionParser]] which parsers expressions inside a String.
@@ -131,6 +133,7 @@ object PlannerExpressionParserImpl extends JavaTokenParsers
   lazy val TRIM_MODE_LEADING: Keyword = Keyword("LEADING")
   lazy val TRIM_MODE_TRAILING: Keyword = Keyword("TRAILING")
   lazy val TRIM_MODE_BOTH: Keyword = Keyword("BOTH")
+  lazy val TO: Keyword = Keyword("TO")
 
   def functionIdent: PlannerExpressionParserImpl.Parser[String] = super.ident
 
@@ -194,8 +197,8 @@ object PlannerExpressionParserImpl extends JavaTokenParsers
     """-?(\d+(\.\d+)?|\d*\.\d+)([eE][+-]?\d+)?[fFdD]?""".r
 
   lazy val numberLiteral: PackratParser[Expression] =
-    (wholeNumber <~ ("l" | "L")) ^^ { n => Literal(n.toLong) } |
-      (decimalNumber <~ ("p" | "P")) ^^ { n => Literal(BigDecimal(n)) } |
+    (wholeNumber <~ ("l" | "L")) ^^ { n => valueLiteral(n.toLong) } |
+      (decimalNumber <~ ("p" | "P")) ^^ { n => valueLiteral(new JBigDecimal(n)) } |
       (floatingPointNumberFlink | decimalNumber) ^^ {
         n =>
           if (n.matches("""-?\d+""")) {
@@ -232,8 +235,8 @@ object PlannerExpressionParserImpl extends JavaTokenParsers
   lazy val literalExpr: PackratParser[Expression] =
     numberLiteral | doubleQuoteStringLiteral | singleQuoteStringLiteral | boolLiteral
 
-  lazy val fieldReference: PackratParser[UnresolvedFieldReferenceExpression] = (STAR | ident) ^^ {
-    sym => unresolvedFieldRef(sym)
+  lazy val fieldReference: PackratParser[UnresolvedReferenceExpression] = (STAR | ident) ^^ {
+    sym => unresolvedRef(sym)
   }
 
   lazy val atom: PackratParser[Expression] =
@@ -639,7 +642,19 @@ object PlannerExpressionParserImpl extends JavaTokenParsers
       case e ~ _ ~ name => call(BuiltInFunctionDefinitions.AS, e, valueLiteral(name.getName))
   }
 
-  lazy val expression: PackratParser[Expression] = overConstant | alias |
+  // columns
+
+  lazy val fieldNameRange: PackratParser[Expression] = fieldReference ~ TO ~ fieldReference ^^ {
+    case start ~ _ ~ end => call(BuiltInFunctionDefinitions.RANGE_TO, start, end)
+  }
+
+  lazy val fieldIndexRange: PackratParser[Expression] = numberLiteral ~ TO ~ numberLiteral ^^ {
+    case start ~ _ ~ end => call(BuiltInFunctionDefinitions.RANGE_TO, start, end)
+  }
+
+  lazy val range = fieldNameRange | fieldIndexRange
+
+  lazy val expression: PackratParser[Expression] = range | overConstant | alias |
     failure("Invalid expression.")
 
   lazy val expressionList: Parser[List[Expression]] = rep1sep(expression, ",")

@@ -21,6 +21,7 @@ package org.apache.flink.table.expressions;
 import org.apache.flink.table.calcite.FlinkTypeFactory;
 import org.apache.flink.table.calcite.RexAggLocalVariable;
 import org.apache.flink.table.calcite.RexDistinctKeyVariable;
+import org.apache.flink.table.functions.sql.FlinkSqlOperatorTable;
 import org.apache.flink.table.type.DecimalType;
 import org.apache.flink.table.type.InternalType;
 import org.apache.flink.table.type.InternalTypes;
@@ -31,7 +32,6 @@ import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlIntervalQualifier;
-import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.tools.RelBuilder;
@@ -67,52 +67,96 @@ public class RexNodeConverter implements ExpressionVisitor<RexNode> {
 
 	@Override
 	public RexNode visitCall(CallExpression call) {
-		List<RexNode> child = call.getChildren().stream()
-				.map(expression -> expression.accept(RexNodeConverter.this))
-				.collect(Collectors.toList());
 		switch (call.getFunctionDefinition().getType()) {
 			case SCALAR_FUNCTION:
-				return visitScalarFunc(call.getFunctionDefinition(), child);
+				return visitScalarFunc(call);
 			default: throw new UnsupportedOperationException();
 		}
 	}
 
-	private RexNode visitScalarFunc(FunctionDefinition def, List<RexNode> child) {
+	private List<RexNode> convertCallChildren(CallExpression call) {
+		return call.getChildren().stream()
+				.map(expression -> expression.accept(RexNodeConverter.this))
+				.collect(Collectors.toList());
+	}
+
+	private RexNode visitScalarFunc(CallExpression call) {
+		FunctionDefinition def = call.getFunctionDefinition();
+
+		if (call.getFunctionDefinition().equals(BuiltInFunctionDefinitions.CAST)) {
+			RexNode child = call.getChildren().get(0).accept(this);
+			TypeLiteralExpression type = (TypeLiteralExpression) call.getChildren().get(1);
+			return relBuilder.getRexBuilder().makeAbstractCast(
+					typeFactory.createTypeFromInternalType(
+							createInternalTypeFromTypeInfo(type.getType()),
+							child.getType().isNullable()),
+					child);
+		} else if (call.getFunctionDefinition().equals(BuiltInFunctionDefinitions.REINTERPRET_CAST)) {
+			RexNode child = call.getChildren().get(0).accept(this);
+			TypeLiteralExpression type = (TypeLiteralExpression) call.getChildren().get(1);
+			RexNode checkOverflow = call.getChildren().get(2).accept(this);
+			return relBuilder.getRexBuilder().makeReinterpretCast(
+					typeFactory.createTypeFromInternalType(
+							createInternalTypeFromTypeInfo(type.getType()),
+							child.getType().isNullable()),
+					child,
+					checkOverflow);
+		}
+
+		List<RexNode> child = convertCallChildren(call);
 		if (BuiltInFunctionDefinitions.IF.equals(def)) {
-			return relBuilder.call(SqlStdOperatorTable.CASE, child);
+			return relBuilder.call(FlinkSqlOperatorTable.CASE, child);
 		} else if (BuiltInFunctionDefinitions.IS_NULL.equals(def)) {
 			return relBuilder.isNull(child.get(0));
 		} else if (BuiltInFunctionDefinitions.PLUS.equals(def)) {
 			if (isString(toInternalType(child.get(0).getType()))) {
 				return relBuilder.call(
-						SqlStdOperatorTable.CONCAT,
+						FlinkSqlOperatorTable.CONCAT,
 						child.get(0),
 						relBuilder.cast(child.get(1), VARCHAR));
 			} else if (isString(toInternalType(child.get(1).getType()))) {
 				return relBuilder.call(
-						SqlStdOperatorTable.CONCAT,
+						FlinkSqlOperatorTable.CONCAT,
 						relBuilder.cast(child.get(0), VARCHAR),
 						child.get(1));
 			} else if (isTimeInterval(toInternalType(child.get(0).getType())) &&
 					child.get(0).getType() == child.get(1).getType()) {
-				return relBuilder.call(SqlStdOperatorTable.PLUS, child);
+				return relBuilder.call(FlinkSqlOperatorTable.PLUS, child);
 			} else if (isTimeInterval(toInternalType(child.get(0).getType()))
 					&& isTemporal(toInternalType(child.get(1).getType()))) {
 				// Calcite has a bug that can't apply INTERVAL + DATETIME (INTERVAL at left)
 				// we manually switch them here
-				return relBuilder.call(SqlStdOperatorTable.DATETIME_PLUS, child);
+				return relBuilder.call(FlinkSqlOperatorTable.DATETIME_PLUS, child);
 			} else if (isTemporal(toInternalType(child.get(0).getType())) &&
 					isTemporal(toInternalType(child.get(1).getType()))) {
-				return relBuilder.call(SqlStdOperatorTable.DATETIME_PLUS, child);
+				return relBuilder.call(FlinkSqlOperatorTable.DATETIME_PLUS, child);
 			} else {
-				return relBuilder.call(SqlStdOperatorTable.PLUS, child);
+				return relBuilder.call(FlinkSqlOperatorTable.PLUS, child);
 			}
 		} else if (BuiltInFunctionDefinitions.MINUS.equals(def)) {
-			return relBuilder.call(SqlStdOperatorTable.MINUS, child);
+			return relBuilder.call(FlinkSqlOperatorTable.MINUS, child);
 		} else if (BuiltInFunctionDefinitions.EQUALS.equals(def)) {
-			return relBuilder.call(SqlStdOperatorTable.EQUALS, child);
+			return relBuilder.call(FlinkSqlOperatorTable.EQUALS, child);
 		} else if (BuiltInFunctionDefinitions.DIVIDE.equals(def)) {
-			return relBuilder.call(SqlStdOperatorTable.DIVIDE, child);
+			return relBuilder.call(FlinkSqlOperatorTable.DIVIDE, child);
+		} else if (BuiltInFunctionDefinitions.LESS_THAN.equals(def)) {
+			return relBuilder.call(FlinkSqlOperatorTable.LESS_THAN, child);
+		} else if (BuiltInFunctionDefinitions.GREATER_THAN.equals(def)) {
+			return relBuilder.call(FlinkSqlOperatorTable.GREATER_THAN, child);
+		} else if (BuiltInFunctionDefinitions.OR.equals(def)) {
+			return relBuilder.call(FlinkSqlOperatorTable.OR, child);
+		} else if (BuiltInFunctionDefinitions.CONCAT.equals(def)) {
+			return relBuilder.call(FlinkSqlOperatorTable.CONCAT, child);
+		} else if (InternalFunctionDefinitions.THROW_EXCEPTION.equals(def)) {
+			return relBuilder.call(FlinkSqlOperatorTable.THROW_EXCEPTION, child);
+		} else if (BuiltInFunctionDefinitions.AND.equals(def)) {
+			return relBuilder.call(FlinkSqlOperatorTable.AND, child);
+		} else if (BuiltInFunctionDefinitions.NOT.equals(def)) {
+			return relBuilder.call(FlinkSqlOperatorTable.NOT, child);
+		} else if (BuiltInFunctionDefinitions.TIMES.equals(def)) {
+			return relBuilder.call(FlinkSqlOperatorTable.MULTIPLY, child);
+		} else if (BuiltInFunctionDefinitions.MOD.equals(def)) {
+			return relBuilder.call(FlinkSqlOperatorTable.MOD, child);
 		} else {
 			throw new UnsupportedOperationException(def.getName());
 		}
@@ -206,8 +250,8 @@ public class RexNodeConverter implements ExpressionVisitor<RexNode> {
 
 	@Override
 	public RexNode visit(Expression other) {
-		if (other instanceof UnresolvedFieldReferenceExpression) {
-			return visitUnresolvedFieldReferenceExpression((UnresolvedFieldReferenceExpression) other);
+		if (other instanceof UnresolvedReferenceExpression) {
+			return visitUnresolvedReferenceExpression((UnresolvedReferenceExpression) other);
 		} else if (other instanceof ResolvedAggInputReference) {
 			return visitResolvedAggInputReference((ResolvedAggInputReference) other);
 		} else if (other instanceof ResolvedAggLocalReference) {
@@ -219,7 +263,7 @@ public class RexNodeConverter implements ExpressionVisitor<RexNode> {
 		}
 	}
 
-	private RexNode visitUnresolvedFieldReferenceExpression(UnresolvedFieldReferenceExpression field) {
+	private RexNode visitUnresolvedReferenceExpression(UnresolvedReferenceExpression field) {
 		return relBuilder.field(field.getName());
 	}
 

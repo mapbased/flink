@@ -17,6 +17,7 @@
  */
 package org.apache.flink.table.api
 
+import org.apache.flink.api.common.time.Time
 import org.apache.flink.configuration.{Configuration, GlobalConfiguration}
 import org.apache.flink.table.api.OperatorType.OperatorType
 import org.apache.flink.table.calcite.CalciteConfig
@@ -160,6 +161,51 @@ class TableConfig {
     } else {
       !disableOperators.contains(operator.toString)
     }
+  }
+
+  /**
+    * Specifies a minimum and a maximum time interval for how long idle state, i.e., state which
+    * was not updated, will be retained.
+    * State will never be cleared until it was idle for less than the minimum time and will never
+    * be kept if it was idle for more than the maximum time.
+    *
+    * When new data arrives for previously cleaned-up state, the new data will be handled as if it
+    * was the first data. This can result in previous results being overwritten.
+    *
+    * Set to 0 (zero) to never clean-up the state.
+    *
+    * @param minTime The minimum time interval for which idle state is retained. Set to 0 (zero) to
+    *                never clean-up the state.
+    * @param maxTime The maximum time interval for which idle state is retained. May not be smaller
+    *                than than minTime. Set to 0 (zero) to never clean-up the state.
+    */
+  def withIdleStateRetentionTime(minTime: Time, maxTime: Time): TableConfig = {
+    if (maxTime.toMilliseconds < minTime.toMilliseconds) {
+      throw new IllegalArgumentException("maxTime may not be smaller than minTime.")
+    }
+    this.conf.setLong(TableConfigOptions.SQL_EXEC_STATE_TTL_MS, minTime.toMilliseconds)
+    this.conf.setLong(TableConfigOptions.SQL_EXEC_STATE_TTL_MAX_MS, maxTime.toMilliseconds)
+    this
+  }
+
+  /**
+    * Returns the minimum time until state which was not updated will be retained.
+    */
+  def getMinIdleStateRetentionTime: Long = {
+    this.conf.getLong(TableConfigOptions.SQL_EXEC_STATE_TTL_MS)
+  }
+
+  /**
+    * Returns the maximum time until state which was not updated will be retained.
+    */
+  def getMaxIdleStateRetentionTime: Long = {
+    // only min idle ttl provided.
+    if (this.conf.contains(TableConfigOptions.SQL_EXEC_STATE_TTL_MS)
+      && !this.conf.contains(TableConfigOptions.SQL_EXEC_STATE_TTL_MAX_MS)) {
+      this.conf.setLong(TableConfigOptions.SQL_EXEC_STATE_TTL_MAX_MS,
+        getMinIdleStateRetentionTime * 2)
+    }
+    this.conf.getLong(TableConfigOptions.SQL_EXEC_STATE_TTL_MAX_MS)
   }
 }
 

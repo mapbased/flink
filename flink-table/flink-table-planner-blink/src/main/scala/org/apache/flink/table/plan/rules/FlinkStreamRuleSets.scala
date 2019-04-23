@@ -97,11 +97,11 @@ object FlinkStreamRuleSets {
   /**
     * RuleSet to do predicate pushdown
     */
-  val FILTER_PREPARE_RULES: RuleSet =  RuleSets.ofList((
-      FILTER_RULES.asScala
-          // reduce expressions in filters and joins
-          ++ REDUCE_EXPRESSION_RULES.asScala
-      ).asJava)
+  val FILTER_PREPARE_RULES: RuleSet = RuleSets.ofList((
+    FILTER_RULES.asScala
+      // reduce expressions in filters and joins
+      ++ REDUCE_EXPRESSION_RULES.asScala
+    ).asJava)
 
   /**
     * RuleSet to prune empty results rules
@@ -165,6 +165,9 @@ object FlinkStreamRuleSets {
     // reduce aggregate functions like AVG, STDDEV_POP etc.
     AggregateReduceFunctionsRule.INSTANCE,
 
+    // expand grouping sets
+    DecomposeGroupingSetsRule.INSTANCE,
+
     // remove unnecessary sort rule
     SortRemoveRule.INSTANCE,
 
@@ -194,6 +197,7 @@ object FlinkStreamRuleSets {
     FlinkLogicalDataStreamTableScan.CONVERTER,
     FlinkLogicalExpand.CONVERTER,
     FlinkLogicalWatermarkAssigner.CONVERTER,
+    FlinkLogicalWindowAggregate.CONVERTER,
     FlinkLogicalSink.CONVERTER
   )
 
@@ -202,18 +206,21 @@ object FlinkStreamRuleSets {
     */
   val LOGICAL_OPT_RULES: RuleSet = RuleSets.ofList((
     FILTER_RULES.asScala ++
-    PROJECT_RULES.asScala ++
-    PRUNE_EMPTY_RULES.asScala ++
-    LOGICAL_RULES.asScala ++
-    LOGICAL_CONVERTERS.asScala
-  ).asJava)
+      PROJECT_RULES.asScala ++
+      PRUNE_EMPTY_RULES.asScala ++
+      LOGICAL_RULES.asScala ++
+      LOGICAL_CONVERTERS.asScala
+    ).asJava)
 
   /**
     * RuleSet to od rewrite on FlinkLogicalRel for Stream
     */
   val LOGICAL_REWRITE: RuleSet = RuleSets.ofList(
     // transform over window to topn node
-    FlinkLogicalRankRule.INSTANCE
+    FlinkLogicalRankRule.INSTANCE,
+    // split distinct aggregate to reduce data skew
+    SplitAggregateRule.INSTANCE
+    // TODO add flink calc merge rule
   )
 
   /**
@@ -232,8 +239,33 @@ object FlinkStreamRuleSets {
     StreamExecRankRule.INSTANCE,
     StreamExecTemporalSortRule.INSTANCE,
     StreamExecDeduplicateRule.RANK_INSTANCE,
+    StreamExecGroupAggregateRule.INSTANCE,
+    StreamExecOverAggregateRule.INSTANCE,
+    StreamExecExpandRule.INSTANCE,
+    StreamExecJoinRule.INSTANCE,
+    StreamExecWindowJoinRule.INSTANCE,
     StreamExecCorrelateRule.INSTANCE,
     StreamExecSinkRule.INSTANCE
+  )
+
+  /**
+    * RuleSet for retraction inference.
+    */
+  val RETRACTION_RULES: RuleSet = RuleSets.ofList(
+    // retraction rules
+    StreamExecRetractionRules.DEFAULT_RETRACTION_INSTANCE,
+    StreamExecRetractionRules.UPDATES_AS_RETRACTION_INSTANCE,
+    StreamExecRetractionRules.ACCMODE_INSTANCE
+  )
+
+  /**
+    * RuleSet to optimize plans after stream exec execution.
+    */
+  val PHYSICAL_REWRITE: RuleSet = RuleSets.ofList(
+    //optimize agg rule
+    TwoStageOptimizedAggregateRule.INSTANCE,
+    // incremental agg rule
+    IncrementalAggregateRule.INSTANCE
   )
 
 }

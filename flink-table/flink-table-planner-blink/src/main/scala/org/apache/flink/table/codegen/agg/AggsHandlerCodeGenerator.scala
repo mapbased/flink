@@ -26,14 +26,14 @@ import org.apache.flink.table.codegen.Indenter.toISC
 import org.apache.flink.table.codegen._
 import org.apache.flink.table.codegen.agg.AggsHandlerCodeGenerator._
 import org.apache.flink.table.dataformat.{BaseRow, GenericRow}
-import org.apache.flink.table.dataview.DataViewSpec
+import org.apache.flink.table.dataview._
 import org.apache.flink.table.expressions._
-import org.apache.flink.table.functions.{AggregateFunction, DeclarativeAggregateFunction}
+import org.apache.flink.table.functions.AggregateFunction
+import org.apache.flink.table.functions.aggfunctions.DeclarativeAggregateFunction
 import org.apache.flink.table.generated.{AggsHandleFunction, GeneratedAggsHandleFunction, GeneratedNamespaceAggsHandleFunction, NamespaceAggsHandleFunction}
 import org.apache.flink.table.plan.util.AggregateInfoList
 import org.apache.calcite.rex.RexLiteral
 import org.apache.calcite.tools.RelBuilder
-import org.apache.flink.table.runtime.context.ExecutionContext
 
 /**
   * A code generator for generating [[AggsHandleFunction]].
@@ -46,7 +46,8 @@ class AggsHandlerCodeGenerator(
     relBuilder: RelBuilder,
     inputFieldTypes: Seq[InternalType],
     needRetract: Boolean,
-    copyInputField: Boolean) {
+    copyInputField: Boolean,
+    needAccumulate: Boolean = true) {
 
   private val inputType = new RowType(inputFieldTypes: _*)
 
@@ -142,7 +143,7 @@ class AggsHandlerCodeGenerator(
   def withMerging(
       mergedAccOffset: Int,
       mergedAccOnHeap: Boolean,
-      mergedAccExternalTypes: Array[TypeInformation[_]]): AggsHandlerCodeGenerator = {
+      mergedAccExternalTypes: Array[TypeInformation[_]] = null): AggsHandlerCodeGenerator = {
     this.mergedAccOffset = mergedAccOffset
     this.mergedAccOnHeap = mergedAccOnHeap
     this.mergedAccExternalTypes = mergedAccExternalTypes
@@ -247,8 +248,8 @@ class AggsHandlerCodeGenerator(
 
     // when input contains retractions, we inserted a count1 agg in the agg list
     // the count1 agg value shouldn't be in the aggregate result
-    if (aggInfoList.count1AggIndex.nonEmpty && aggInfoList.count1AggInserted) {
-      ignoreAggValues ++= Array(aggInfoList.count1AggIndex.get)
+    if (aggInfoList.indexOfCountStar.nonEmpty && aggInfoList.countStarInserted) {
+      ignoreAggValues ++= Array(aggInfoList.indexOfCountStar.get)
     }
 
     // the distinct value shouldn't be in the aggregate result
@@ -303,7 +304,6 @@ class AggsHandlerCodeGenerator(
       j"""
         public final class $functionName implements $AGGS_HANDLER_FUNCTION {
 
-          private $EXECUTION_CONTEXT $CONTEXT_TERM;
           ${ctx.reuseMemberCode()}
 
           public $functionName(java.lang.Object[] references) throws Exception {
@@ -311,8 +311,7 @@ class AggsHandlerCodeGenerator(
           }
 
           @Override
-          public void open($EXECUTION_CONTEXT ctx) throws Exception {
-            this.$CONTEXT_TERM = ctx;
+          public void open($STATE_DATA_VIEW_STORE store) throws Exception {
             ${ctx.reuseOpenCode()}
           }
 
@@ -358,7 +357,6 @@ class AggsHandlerCodeGenerator(
 
           @Override
           public void cleanup() throws Exception {
-            $BASE_ROW $CURRENT_KEY = ctx.currentKey();
             ${ctx.reuseCleanupCode()}
           }
 
@@ -380,7 +378,7 @@ class AggsHandlerCodeGenerator(
       name: String,
       aggInfoList: AggregateInfoList,
       windowProperties: Seq[WindowProperty],
-      windowClass: Class[N]): GeneratedNamespaceAggsHandleFunction = {
+      windowClass: Class[N]): GeneratedNamespaceAggsHandleFunction[N] = {
 
     initialWindowProperties(windowProperties, windowClass)
     initialAggregateInformation(aggInfoList)
@@ -401,7 +399,6 @@ class AggsHandlerCodeGenerator(
         public final class $functionName
           implements $NAMESPACE_AGGS_HANDLER_FUNCTION<$namespaceClassName> {
 
-          private $EXECUTION_CONTEXT $CONTEXT_TERM;
           ${ctx.reuseMemberCode()}
 
           public $functionName(Object[] references) throws Exception {
@@ -409,8 +406,7 @@ class AggsHandlerCodeGenerator(
           }
 
           @Override
-          public void open($EXECUTION_CONTEXT ctx) throws Exception {
-            this.$CONTEXT_TERM = ctx;
+          public void open($STATE_DATA_VIEW_STORE store) throws Exception {
             ${ctx.reuseOpenCode()}
           }
 
@@ -455,7 +451,6 @@ class AggsHandlerCodeGenerator(
 
           @Override
           public void cleanup(Object ns) throws Exception {
-            $BASE_ROW $CURRENT_KEY = ctx.currentKey();
             $namespaceClassName $NAMESPACE_TERM = ($namespaceClassName) ns;
             ${ctx.reuseCleanupCode()}
           }
@@ -467,7 +462,7 @@ class AggsHandlerCodeGenerator(
         }
       """.stripMargin
 
-    new GeneratedNamespaceAggsHandleFunction(functionName, functionCode, ctx.references.toArray)
+    new GeneratedNamespaceAggsHandleFunction[N](functionName, functionCode, ctx.references.toArray)
   }
 
   private def genCreateAccumulators(): String = {
@@ -545,21 +540,26 @@ class AggsHandlerCodeGenerator(
   }
 
   private def genAccumulate(): String = {
-    // validation check
-    checkNeededMethods(needAccumulate = true)
+    if (needAccumulate) {
+      // validation check
+      checkNeededMethods(needAccumulate = true)
 
-    val methodName = "accumulate"
-    ctx.startNewLocalVariableStatement(methodName)
+      val methodName = "accumulate"
+      ctx.startNewLocalVariableStatement(methodName)
 
-    // bind input1 as inputRow
-    val exprGenerator = new ExprCodeGenerator(ctx, INPUT_NOT_NULL)
-        .bindInput(inputType, inputTerm = ACCUMULATE_INPUT_TERM)
-    val body = aggActionCodeGens.map(_.accumulate(exprGenerator)).mkString("\n")
-    s"""
-       |${ctx.reuseLocalVariableCode(methodName)}
-       |${ctx.reuseInputUnboxingCode(ACCUMULATE_INPUT_TERM)}
-       |$body
-    """.stripMargin
+      // bind input1 as inputRow
+      val exprGenerator = new ExprCodeGenerator(ctx, INPUT_NOT_NULL)
+          .bindInput(inputType, inputTerm = ACCUMULATE_INPUT_TERM)
+      val body = aggActionCodeGens.map(_.accumulate(exprGenerator)).mkString("\n")
+      s"""
+         |${ctx.reuseLocalVariableCode(methodName)}
+         |${ctx.reuseInputUnboxingCode(ACCUMULATE_INPUT_TERM)}
+         |$body
+         |""".stripMargin
+    } else {
+      genThrowException(
+        "This function not require accumulate method, but the accumulate method is called.")
+    }
   }
 
   private def genRetract(): String = {
@@ -644,13 +644,13 @@ class AggsHandlerCodeGenerator(
           // return a Timestamp(Internal is long)
           GeneratedExpression(
             s"$NAMESPACE_TERM.getEnd()", "false", "", w.resultType)
-//        case r: RowtimeAttribute =>
-//          // return a rowtime, use long as internal type
-//          GeneratedExpression(
-//            s"$NAMESPACE_TERM.getEnd() - 1", "false", "", r.resultType.toInternalType)
-//        case p: ProctimeAttribute =>
-//          // ignore this property, it will be null at the position later
-//          GeneratedExpression("-1L", "true", "", p.resultType.toInternalType)
+        case r: RowtimeAttribute =>
+          // return a rowtime, use long as internal type
+          GeneratedExpression(
+            s"$NAMESPACE_TERM.getEnd() - 1", "false", "", r.resultType)
+        case p: ProctimeAttribute =>
+          // ignore this property, it will be null at the position later
+          GeneratedExpression("-1L", "true", "", p.resultType)
       }
       valueExprs = valueExprs ++ windowExprs
     }
@@ -692,13 +692,6 @@ class AggsHandlerCodeGenerator(
 
 object AggsHandlerCodeGenerator {
 
-  /** static class names */
-  val BASE_ROW: String = className[BaseRow]
-  val GENERIC_ROW: String = className[GenericRow]
-  val AGGS_HANDLER_FUNCTION: String = className[AggsHandleFunction]
-  val NAMESPACE_AGGS_HANDLER_FUNCTION: String = className[NamespaceAggsHandleFunction[_]]
-  val EXECUTION_CONTEXT:String = className[ExecutionContext]
-
   /** static terms **/
   val ACC_TERM = "acc"
   val MERGED_ACC_TERM = "otherAcc"
@@ -707,8 +700,7 @@ object AggsHandlerCodeGenerator {
   val DISTINCT_KEY_TERM = "distinctKey"
 
   val NAMESPACE_TERM = "namespace"
-  val CONTEXT_TERM = "ctx"
-  val CURRENT_KEY = "currentKey"
+  val STORE_TERM = "store"
 
   val INPUT_NOT_NULL = false
 
@@ -722,6 +714,13 @@ object AggsHandlerCodeGenerator {
   }
 
   /**
+    * Creates BinaryGeneric term which wraps the specific DataView term.
+    */
+  def createDataViewBinaryGenericTerm(spec: DataViewSpec): String = {
+    s"${createDataViewTerm(spec)}_binary_generic"
+  }
+
+  /**
     * Create DataView backup term, for example, acc1_map_dataview_backup.
     * The backup dataview term is used for merging two statebackend
     * dataviews, e.g. session window.
@@ -732,6 +731,13 @@ object AggsHandlerCodeGenerator {
     s"${spec.stateId}_dataview_backup"
   }
 
+  /**
+    * Creates BinaryGeneric term which wraps the specific DataView backup term.
+    */
+  def createDataViewBackupBinaryGenericTerm(spec: DataViewSpec): String = {
+    s"${createDataViewBackupTerm(spec)}_binary_generic"
+  }
+
   def addReusableStateDataViews(
       ctx: CodeGeneratorContext,
       viewSpecs: Array[DataViewSpec],
@@ -739,47 +745,53 @@ object AggsHandlerCodeGenerator {
       enableBackupDataView: Boolean): Unit = {
     // add reusable dataviews to context
     viewSpecs.foreach { spec =>
-      val viewFieldTerm = createDataViewTerm(spec)
-      val backupViewTerm = createDataViewBackupTerm(spec)
-      val viewTypeTerm = spec.getStateDataViewClass(hasNamespace).getCanonicalName
-      ctx.addReusableMember(s"private $viewTypeTerm $viewFieldTerm;")
-      val viewTypeInfo = ctx.addReusableObject(spec.dataViewTypeInfo, "viewTypeInfo")
-      val createStateViewCall = spec.getCreateStateViewCall
-      val parameters = s""""${spec.stateId}", $viewTypeInfo, $hasNamespace"""
-
-      val backupOpenCode = if (enableBackupDataView) {
-        // create backup dataview
-        ctx.addReusableMember(s"private $viewTypeTerm $backupViewTerm;")
-        s"""
-           |$backupViewTerm = ($viewTypeTerm) $CONTEXT_TERM.$createStateViewCall($parameters);
-           |$CONTEXT_TERM.registerStateDataView($backupViewTerm);
-         """.stripMargin
-      } else {
-        ""
+      val (viewTypeTerm, registerCall) = spec match {
+        case ListViewSpec(_, _, _) => (className[StateListView[_, _]], "getStateListView")
+        case MapViewSpec(_, _, _) => (className[StateMapView[_, _, _]], "getStateMapView")
       }
+      val viewFieldTerm = createDataViewTerm(spec)
+      val viewFieldInternalTerm = createDataViewBinaryGenericTerm(spec)
+      val viewTypeInfo = ctx.addReusableObject(spec.dataViewTypeInfo, "viewTypeInfo")
+      val parameters = s""""${spec.stateId}", $viewTypeInfo"""
+
+      ctx.addReusableMember(s"private $viewTypeTerm $viewFieldTerm;")
+      ctx.addReusableMember(s"private $BINARY_GENERIC $viewFieldInternalTerm;")
 
       val openCode =
         s"""
-           |$viewFieldTerm = ($viewTypeTerm) $CONTEXT_TERM.$createStateViewCall($parameters);
-           |$CONTEXT_TERM.registerStateDataView($viewFieldTerm);
-           |$backupOpenCode
+           |$viewFieldTerm = ($viewTypeTerm) $STORE_TERM.$registerCall($parameters);
+           |$viewFieldInternalTerm = ${genToInternal(ctx, spec.dataViewTypeInfo, viewFieldTerm)};
          """.stripMargin
       ctx.addReusableOpenStatement(openCode)
 
-      // only cleanup dataview term, do not cleanup backup
+      // only cleanup dataview term, do not need to cleanup backup
       val cleanupCode = if (hasNamespace) {
         s"""
-           |$viewFieldTerm.setCurrentKey($CURRENT_KEY);
            |$viewFieldTerm.setCurrentNamespace($NAMESPACE_TERM);
            |$viewFieldTerm.clear();
         """.stripMargin
       } else {
         s"""
-           |$viewFieldTerm.setCurrentKey($CURRENT_KEY);
            |$viewFieldTerm.clear();
         """.stripMargin
       }
       ctx.addReusableCleanupStatement(cleanupCode)
+
+      // generate backup dataview codes
+      if (enableBackupDataView) {
+        val backupViewTerm = createDataViewBackupTerm(spec)
+        val backupViewInternalTerm = createDataViewBackupBinaryGenericTerm(spec)
+        // create backup dataview
+        ctx.addReusableMember(s"private $viewTypeTerm $backupViewTerm;")
+        ctx.addReusableMember(s"private $BINARY_GENERIC $backupViewInternalTerm;")
+        val backupOpenCode =
+          s"""
+             |$backupViewTerm = ($viewTypeTerm) $STORE_TERM.$registerCall($parameters);
+             |$backupViewInternalTerm = ${genToInternal(
+                ctx, spec.dataViewTypeInfo, backupViewTerm)};
+           """.stripMargin
+        ctx.addReusableOpenStatement(backupOpenCode)
+      }
     }
   }
 }
