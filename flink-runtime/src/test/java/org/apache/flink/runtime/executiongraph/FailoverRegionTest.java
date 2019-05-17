@@ -64,6 +64,7 @@ import org.apache.flink.runtime.state.CheckpointStorageCoordinatorView;
 import org.apache.flink.runtime.state.OperatorStateHandle;
 import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.apache.flink.runtime.testingUtils.TestingUtils;
+import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.Ignore;
@@ -113,7 +114,7 @@ public class FailoverRegionTest extends TestLogger {
 
 		// verify checkpoint has been completed successfully.
 		assertEquals(1, eg.getCheckpointCoordinator().getCheckpointStore().getNumberOfRetainedCheckpoints());
-		assertEquals(checkpointId, eg.getCheckpointCoordinator().getCheckpointStore().getLatestCheckpoint().getCheckpointID());
+		assertEquals(checkpointId, eg.getCheckpointCoordinator().getCheckpointStore().getLatestCheckpoint(false).getCheckpointID());
 
 		ev.getCurrentExecutionAttempt().fail(new Exception("Test Exception"));
 		assertEquals(JobStatus.CANCELLING, strategy.getFailoverRegion(ev).getState());
@@ -449,6 +450,82 @@ public class FailoverRegionTest extends TestLogger {
 		assertEquals(JobStatus.CANCELLING, strategy.getFailoverRegion(ev1).getState());
 	}
 
+	@Test
+	public void testStatusResettingOnRegionFailover() throws Exception {
+		final JobID jobId = new JobID();
+		final String jobName = "Test Job Sample Name";
+
+		final SlotProvider slotProvider = new SimpleSlotProvider(jobId, 20);
+
+		JobVertex v1 = new JobVertex("vertex1");
+		JobVertex v2 = new JobVertex("vertex2");
+
+		v1.setParallelism(2);
+		v2.setParallelism(2);
+
+		v1.setInvokableClass(AbstractInvokable.class);
+		v2.setInvokableClass(AbstractInvokable.class);
+
+		v2.connectNewDataSetAsInput(v1, DistributionPattern.ALL_TO_ALL, ResultPartitionType.BLOCKING);
+
+		List<JobVertex> ordered = Arrays.asList(v1, v2);
+
+		ExecutionGraph eg = new ExecutionGraph(
+			new DummyJobInformation(
+				jobId,
+				jobName),
+			TestingUtils.defaultExecutor(),
+			TestingUtils.defaultExecutor(),
+			AkkaUtils.getDefaultTimeout(),
+			new InfiniteDelayRestartStrategy(10),
+			new FailoverPipelinedRegionWithDirectExecutor(),
+			slotProvider);
+
+		eg.attachJobGraph(ordered);
+		eg.start(TestingComponentMainThreadExecutorServiceAdapter.forMainThread());
+
+		RestartPipelinedRegionStrategy strategy = (RestartPipelinedRegionStrategy)eg.getFailoverStrategy();
+
+		ExecutionVertex ev11 = eg.getJobVertex(v1.getID()).getTaskVertices()[0];
+		ExecutionVertex ev12 = eg.getJobVertex(v1.getID()).getTaskVertices()[1];
+		ExecutionVertex ev21 = eg.getJobVertex(v2.getID()).getTaskVertices()[0];
+		ExecutionVertex ev22 = eg.getJobVertex(v2.getID()).getTaskVertices()[1];
+
+		eg.scheduleForExecution();
+
+		// initial state
+		assertEquals(ExecutionState.DEPLOYING, ev11.getExecutionState());
+		assertEquals(ExecutionState.DEPLOYING, ev12.getExecutionState());
+		assertEquals(ExecutionState.CREATED, ev21.getExecutionState());
+		assertEquals(ExecutionState.CREATED, ev22.getExecutionState());
+		assertFalse(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].areAllPartitionsFinished());
+		assertFalse(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].getPartitions()[0].isConsumable());
+		assertFalse(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].getPartitions()[1].isConsumable());
+
+		// partitions all finished
+		ev11.getCurrentExecutionAttempt().markFinished();
+		ev12.getCurrentExecutionAttempt().markFinished();
+		assertEquals(ExecutionState.FINISHED, ev11.getExecutionState());
+		assertEquals(ExecutionState.FINISHED, ev12.getExecutionState());
+		assertEquals(ExecutionState.DEPLOYING, ev21.getExecutionState());
+		assertEquals(ExecutionState.DEPLOYING, ev22.getExecutionState());
+		assertTrue(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].areAllPartitionsFinished());
+		assertTrue(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].getPartitions()[0].isConsumable());
+		assertTrue(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].getPartitions()[1].isConsumable());
+
+		// force the partition producer to restart
+		strategy.onTaskFailure(ev11.getCurrentExecutionAttempt(), new FlinkException("Fail for testing"));
+		assertFalse(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].areAllPartitionsFinished());
+		assertFalse(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].getPartitions()[0].isConsumable());
+		assertFalse(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].getPartitions()[1].isConsumable());
+
+		// failed partition finishes again
+		ev11.getCurrentExecutionAttempt().markFinished();
+		assertTrue(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].areAllPartitionsFinished());
+		assertTrue(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].getPartitions()[0].isConsumable());
+		assertTrue(eg.getJobVertex(v1.getID()).getProducedDataSets()[0].getPartitions()[1].isConsumable());
+	}
+
 	// --------------------------------------------------------------------------------------------
 
 	private void verifyCheckpointRestoredAsExpected(ExecutionGraph eg) throws Exception {
@@ -458,7 +535,7 @@ public class FailoverRegionTest extends TestLogger {
 
 		// verify checkpoint has been restored successfully.
 		assertEquals(1, eg.getCheckpointCoordinator().getCheckpointStore().getNumberOfRetainedCheckpoints());
-		assertEquals(checkpointId, eg.getCheckpointCoordinator().getCheckpointStore().getLatestCheckpoint().getCheckpointID());
+		assertEquals(checkpointId, eg.getCheckpointCoordinator().getCheckpointStore().getLatestCheckpoint(false).getCheckpointID());
 	}
 
 	private ExecutionGraph createSingleRegionExecutionGraph(RestartStrategy restartStrategy) throws Exception {
@@ -545,7 +622,8 @@ public class FailoverRegionTest extends TestLogger {
 					0,
 					jobVertices,
 					mock(CheckpointCoordinatorConfiguration.class),
-					new UnregisteredMetricsGroup()));
+					new UnregisteredMetricsGroup()),
+				false);
 	}
 
 	/**

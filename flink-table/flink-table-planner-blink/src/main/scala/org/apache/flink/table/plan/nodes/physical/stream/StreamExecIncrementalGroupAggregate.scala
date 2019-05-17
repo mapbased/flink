@@ -120,9 +120,16 @@ class StreamExecIncrementalGroupAggregate(
         shuffleKey = Some(partialAggGrouping)))
   }
 
+  //~ ExecNode methods -----------------------------------------------------------
 
   override def getInputNodes: util.List[ExecNode[StreamTableEnvironment, _]] = {
     getInputs.map(_.asInstanceOf[ExecNode[StreamTableEnvironment, _]])
+  }
+
+  override def replaceInputNode(
+      ordinalInParent: Int,
+      newInputNode: ExecNode[StreamTableEnvironment, _]): Unit = {
+    replaceInput(ordinalInParent, newInputNode.asInstanceOf[RelNode])
   }
 
   override protected def translateToPlanInternal(
@@ -201,12 +208,11 @@ class StreamExecIncrementalGroupAggregate(
       CodeGeneratorContext(config),
       relBuilder,
       FlinkTypeFactory.toInternalRowType(inputRowType).getFieldTypes,
-      needRetract = false,
-      config.getNullCheck,
       inputFieldCopy)
 
     generator
-      .withMerging(mergedAccOffset, mergedAccOnHeap = true, mergedAccExternalTypes)
+      .needAccumulate()
+      .needMerge(mergedAccOffset, mergedAccOnHeap = true, mergedAccExternalTypes)
       .generateAggsHandler(name, aggInfoList)
   }
 }

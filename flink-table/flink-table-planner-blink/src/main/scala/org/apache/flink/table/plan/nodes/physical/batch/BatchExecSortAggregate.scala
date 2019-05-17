@@ -44,7 +44,7 @@ class BatchExecSortAggregate(
     inputRel: RelNode,
     outputRowType: RelDataType,
     inputRowType: RelDataType,
-    aggInputRowType: RelDataType,
+    val aggInputRowType: RelDataType,
     grouping: Array[Int],
     auxGrouping: Array[Int],
     aggCallToAggFunction: Seq[(AggregateCall, UserDefinedFunction)],
@@ -94,6 +94,8 @@ class BatchExecSortAggregate(
         isMerge,
         isGlobal = true))
   }
+
+  //~ ExecNode methods -----------------------------------------------------------
 
   override def getDamBehavior: DamBehavior = {
     if (grouping.length == 0) DamBehavior.FULL_DAM else DamBehavior.PIPELINED

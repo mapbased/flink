@@ -24,10 +24,10 @@ import org.apache.flink.table.CalcitePair
 import org.apache.flink.table.`type`.InternalTypes
 import org.apache.flink.table.api.{BatchTableEnvironment, TableConfig, TableConfigOptions}
 import org.apache.flink.table.calcite.FlinkTypeFactory
-import org.apache.flink.table.codegen.agg.AggsHandlerCodeGenerator
-import org.apache.flink.table.codegen.sort.ComparatorCodeGenerator
 import org.apache.flink.table.codegen.CodeGeneratorContext
+import org.apache.flink.table.codegen.agg.AggsHandlerCodeGenerator
 import org.apache.flink.table.codegen.over.{MultiFieldRangeBoundComparatorCodeGenerator, RangeBoundComparatorCodeGenerator}
+import org.apache.flink.table.codegen.sort.ComparatorCodeGenerator
 import org.apache.flink.table.dataformat.{BaseRow, BinaryRow}
 import org.apache.flink.table.functions.UserDefinedFunction
 import org.apache.flink.table.generated.GeneratedRecordComparator
@@ -53,7 +53,6 @@ import org.apache.calcite.sql.fun.SqlLeadLagAggFunction
 import org.apache.calcite.tools.RelBuilder
 
 import java.util
-import java.util.function.Function
 
 import scala.collection.JavaConversions._
 import scala.collection.mutable.ArrayBuffer
@@ -71,9 +70,9 @@ class BatchExecOverAggregate(
     grouping: Array[Int],
     orderKeyIndices: Array[Int],
     orders: Array[Boolean],
+    nullIsLasts: Array[Boolean],
     windowGroupToAggCallToAggFunction: Seq[
       (Window.Group, Seq[(AggregateCall, UserDefinedFunction)])],
-    nullIsLasts: Array[Boolean],
     logicWindow: Window)
   extends SingleRel(cluster, traitSet, inputRel)
   with BatchPhysicalRel
@@ -127,8 +126,8 @@ class BatchExecOverAggregate(
       grouping,
       orderKeyIndices,
       orders,
-      windowGroupToAggCallToAggFunction,
       nullIsLasts,
+      windowGroupToAggCallToAggFunction,
       logicWindow)
   }
 
@@ -243,10 +242,18 @@ class BatchExecOverAggregate(
     windowGroupInfo
   }
 
+  //~ ExecNode methods -----------------------------------------------------------
+
   override def getDamBehavior = DamBehavior.PIPELINED
 
   override def getInputNodes: util.List[ExecNode[BatchTableEnvironment, _]] =
     List(getInput.asInstanceOf[ExecNode[BatchTableEnvironment, _]])
+
+  override def replaceInputNode(
+      ordinalInParent: Int,
+      newInputNode: ExecNode[BatchTableEnvironment, _]): Unit = {
+    replaceInput(ordinalInParent, newInputNode.asInstanceOf[RelNode])
+  }
 
   override def translateToPlanInternal(
       tableEnv: BatchTableEnvironment): StreamTransformation[BaseRow] = {
@@ -279,11 +286,12 @@ class BatchExecOverAggregate(
           codeGenCtx,
           relBuilder,
           inputType.getFieldTypes,
-          needRetract = false,
           copyInputField = false)
         // over agg code gen must pass the constants
-        generator.withConstants(constants).generateAggsHandler(
-          "BoundedOverAggregateHelper", aggInfoList)
+        generator
+          .needAccumulate()
+          .withConstants(constants)
+          .generateAggsHandler("BoundedOverAggregateHelper", aggInfoList)
       }.toArray
 
       val resetAccumulators =
@@ -337,12 +345,14 @@ class BatchExecOverAggregate(
               CodeGeneratorContext(config),
               relBuilder,
               inputType.getFieldTypes,
-              needRetract = true,
               copyInputField = false)
 
             // over agg code gen must pass the constants
-            val genAggsHandler = generator.withConstants(constants)
-                .generateAggsHandler("BoundedOverAggregateHelper", aggInfoList)
+            val genAggsHandler = generator
+              .needAccumulate()
+              .needRetract()
+              .withConstants(constants)
+              .generateAggsHandler("BoundedOverAggregateHelper", aggInfoList)
 
             // LEAD is behind the currentRow, so we need plus offset.
             // LAG is in front of the currentRow, so we need minus offset.
@@ -407,11 +417,12 @@ class BatchExecOverAggregate(
             codeGenCtx,
             relBuilder,
             inputType.getFieldTypes,
-            needRetract = false,
             copyInputField = false)
 
           // over agg code gen must pass the constants
-          val genAggsHandler = generator.withConstants(constants)
+          val genAggsHandler = generator
+              .needAccumulate()
+              .withConstants(constants)
               .generateAggsHandler("BoundedOverAggregateHelper", aggInfoList)
 
           mode match {

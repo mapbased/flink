@@ -19,7 +19,6 @@
 package org.apache.flink.table.plan.util
 
 import org.apache.flink.table.JArrayList
-
 import org.apache.calcite.rel.RelFieldCollation.{Direction, NullDirection}
 import org.apache.calcite.rel.core.Window
 import org.apache.calcite.rel.core.Window.Group
@@ -89,7 +88,7 @@ object OverAggregateUtil {
       }
       val fields = new JArrayList[RelFieldCollation]()
       for (field <- groupCollation ++ orderCollation) {
-        fields.add(RelFieldCollationUtil.of(field._1, field._2, field._3))
+        fields.add(FlinkRelOptUtil.ofRelFieldCollation(field._1, field._2, field._3))
       }
       RelCollations.of(fields)
     } else {

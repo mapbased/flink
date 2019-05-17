@@ -19,22 +19,18 @@
 package org.apache.flink.runtime.io.network.partition;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.runtime.io.disk.iomanager.IOManager;
-import org.apache.flink.runtime.io.disk.iomanager.IOManagerAsync;
 import org.apache.flink.runtime.io.network.NetworkEnvironment;
-import org.apache.flink.runtime.io.network.TaskEventDispatcher;
+import org.apache.flink.runtime.io.network.NetworkEnvironmentBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
-import org.apache.flink.runtime.taskmanager.NetworkEnvironmentConfigurationBuilder;
-import org.apache.flink.runtime.taskmanager.NoOpTaskActions;
 import org.apache.flink.runtime.taskmanager.TaskActions;
 
-import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Test;
 
 import static org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils.createFilledBufferConsumer;
+import static org.apache.flink.runtime.io.network.partition.PartitionTestUtils.createPartition;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -50,14 +46,6 @@ import static org.mockito.Mockito.verify;
  * Tests for {@link ResultPartition}.
  */
 public class ResultPartitionTest {
-
-	/** Asynchronous I/O manager. */
-	private static final IOManager ioManager = new IOManagerAsync();
-
-	@AfterClass
-	public static void shutdown() {
-		ioManager.shutdown();
-	}
 
 	/**
 	 * Tests the schedule or update consumers message sending behaviour depending on the relevant flags.
@@ -214,11 +202,6 @@ public class ResultPartitionTest {
 	}
 
 	@Test
-	public void testReleaseMemoryOnBlockingPartition() throws Exception {
-		testReleaseMemory(ResultPartitionType.BLOCKING);
-	}
-
-	@Test
 	public void testReleaseMemoryOnPipelinedPartition() throws Exception {
 		testReleaseMemory(ResultPartitionType.PIPELINED);
 	}
@@ -230,9 +213,8 @@ public class ResultPartitionTest {
 	 */
 	private void testReleaseMemory(final ResultPartitionType resultPartitionType) throws Exception {
 		final int numAllBuffers = 10;
-		final NetworkEnvironment network = new NetworkEnvironment(new NetworkEnvironmentConfigurationBuilder()
-			.setNumNetworkBuffers(numAllBuffers).build(),
-			new TaskEventDispatcher());
+		final NetworkEnvironment network = new NetworkEnvironmentBuilder()
+			.setNumNetworkBuffers(numAllBuffers).build();
 		final ResultPartitionConsumableNotifier notifier = new NoOpResultPartitionConsumableNotifier();
 		final ResultPartition resultPartition = createPartition(notifier, resultPartitionType, false);
 		try {
@@ -261,25 +243,5 @@ public class ResultPartitionTest {
 			resultPartition.release();
 			network.shutdown();
 		}
-	}
-
-	// ------------------------------------------------------------------------
-
-	private static ResultPartition createPartition(
-			ResultPartitionConsumableNotifier notifier,
-			ResultPartitionType type,
-			boolean sendScheduleOrUpdateConsumersMessage) {
-		return new ResultPartition(
-			"TestTask",
-			new NoOpTaskActions(),
-			new JobID(),
-			new ResultPartitionID(),
-			type,
-			1,
-			1,
-			mock(ResultPartitionManager.class),
-			notifier,
-			ioManager,
-			sendScheduleOrUpdateConsumersMessage);
 	}
 }

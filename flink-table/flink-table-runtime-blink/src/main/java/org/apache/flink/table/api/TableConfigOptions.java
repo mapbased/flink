@@ -72,6 +72,13 @@ public class TableConfigOptions {
 					.withDescription("Sets the number of per-requested buffers when the operator " +
 							"allocates much more segments from the floating memory pool.");
 
+	public static final ConfigOption<Boolean> SQL_EXEC_SORT_NON_TEMPORAL_ENABLED =
+			key("sql.exec.sort.non-temporal.enabled")
+					.defaultValue(false)
+					.withDescription("Switch on/off stream sort without temporal or limit." +
+							"Set whether to enable universal sort for stream. When it is false, " +
+							"universal sort can't use for stream, default false. Just for testing.");
+
 	// ------------------------------------------------------------------------
 	//  Spill Options
 	// ------------------------------------------------------------------------
@@ -207,5 +214,21 @@ public class TableConfigOptions {
 							"If the configure's value is \"NestedLoopJoin, ShuffleHashJoin\", NestedLoopJoin and ShuffleHashJoin " +
 							"are disabled. If the configure's value is \"HashJoin\", " +
 							"ShuffleHashJoin and BroadcastHashJoin are disabled.");
+
+
+	// ------------------------------------------------------------------------
+	//  prefer and max memory resource Options
+	// ------------------------------------------------------------------------
+
+	public static final ConfigOption<Long> SQL_RESOURCE_INFER_ROWS_PER_PARTITION =
+			key("sql.resource.infer.rows-per-partition")
+					.defaultValue(1000000L)
+					.withDescription("Sets how many rows one partition processes. We will infer parallelism according " +
+							"to input row count.");
+
+	public static final ConfigOption<Integer> SQL_RESOURCE_INFER_OPERATOR_PARALLELISM_MAX =
+			key("sql.resource.infer.operator.parallelism.max")
+					.defaultValue(800)
+					.withDescription("Sets max parallelism for all operators.");
 
 }

@@ -26,12 +26,11 @@ import org.apache.flink.table.codegen.CodeGeneratorContext
 import org.apache.flink.table.codegen.ProjectionCodeGenerator.generateProjection
 import org.apache.flink.table.codegen.sort.SortCodeGenerator
 import org.apache.flink.table.dataformat.BaseRow
-import org.apache.flink.table.plan.FlinkJoinRelType
 import org.apache.flink.table.plan.cost.{FlinkCost, FlinkCostFactory}
 import org.apache.flink.table.plan.nodes.ExpressionFormat
-import org.apache.flink.table.plan.nodes.exec.{BatchExecNode, ExecNode}
+import org.apache.flink.table.plan.nodes.exec.ExecNode
 import org.apache.flink.table.plan.util.{FlinkRelMdUtil, JoinUtil, SortUtil}
-import org.apache.flink.table.runtime.join.SortMergeJoinOperator
+import org.apache.flink.table.runtime.join.{FlinkJoinType, SortMergeJoinOperator}
 
 import org.apache.calcite.plan._
 import org.apache.calcite.rel.core._
@@ -46,21 +45,27 @@ import scala.collection.JavaConversions._
 /**
   * Batch physical RelNode for sort-merge [[Join]].
   */
-trait BatchExecSortMergeJoinBase extends BatchExecJoinBase with BatchExecNode[BaseRow] {
-
-  // true if LHS is sorted by left join keys, else false
-  val leftSorted: Boolean
-  // true if RHS is sorted by right join key, else false
-  val rightSorted: Boolean
+class BatchExecSortMergeJoin(
+    cluster: RelOptCluster,
+    traitSet: RelTraitSet,
+    leftRel: RelNode,
+    rightRel: RelNode,
+    condition: RexNode,
+    joinType: JoinRelType,
+    // true if LHS is sorted by left join keys, else false
+    val leftSorted: Boolean,
+    // true if RHS is sorted by right join key, else false
+    val rightSorted: Boolean)
+  extends BatchExecJoinBase(cluster, traitSet, leftRel, rightRel, condition, joinType) {
 
   protected lazy val (leftAllKey, rightAllKey) =
     JoinUtil.checkAndGetJoinKeys(keyPairs, getLeft, getRight)
 
-  protected def isMergeJoinSupportedType(joinRelType: FlinkJoinRelType): Boolean = {
-    joinRelType == FlinkJoinRelType.INNER ||
-      joinRelType == FlinkJoinRelType.LEFT ||
-      joinRelType == FlinkJoinRelType.RIGHT ||
-      joinRelType == FlinkJoinRelType.FULL
+  protected def isMergeJoinSupportedType(joinRelType: FlinkJoinType): Boolean = {
+    joinRelType == FlinkJoinType.INNER ||
+      joinRelType == FlinkJoinType.LEFT ||
+      joinRelType == FlinkJoinType.RIGHT ||
+      joinRelType == FlinkJoinType.FULL
   }
 
   protected lazy val smjType: SortMergeJoinType.Value = {
@@ -68,13 +73,31 @@ trait BatchExecSortMergeJoinBase extends BatchExecJoinBase with BatchExecNode[Ba
       case (true, true) if isMergeJoinSupportedType(flinkJoinType) =>
         SortMergeJoinType.MergeJoin
       case (false, true) //TODO support more
-        if flinkJoinType == FlinkJoinRelType.INNER || flinkJoinType == FlinkJoinRelType.RIGHT =>
+        if flinkJoinType == FlinkJoinType.INNER || flinkJoinType == FlinkJoinType.RIGHT =>
         SortMergeJoinType.SortLeftJoin
       case (true, false) //TODO support more
-        if flinkJoinType == FlinkJoinRelType.INNER || flinkJoinType == FlinkJoinRelType.LEFT =>
+        if flinkJoinType == FlinkJoinType.INNER || flinkJoinType == FlinkJoinType.LEFT =>
         SortMergeJoinType.SortRightJoin
       case _ => SortMergeJoinType.SortMergeJoin
     }
+  }
+
+  override def copy(
+      traitSet: RelTraitSet,
+      conditionExpr: RexNode,
+      left: RelNode,
+      right: RelNode,
+      joinType: JoinRelType,
+      semiJoinDone: Boolean): Join = {
+    new BatchExecSortMergeJoin(
+      cluster,
+      traitSet,
+      left,
+      right,
+      conditionExpr,
+      joinType,
+      leftSorted,
+      rightSorted)
   }
 
   override def explainTerms(pw: RelWriter): RelWriter =
@@ -119,16 +142,22 @@ trait BatchExecSortMergeJoinBase extends BatchExecJoinBase with BatchExecNode[Ba
     costFactory.makeCost(rowCount, cpuCost, 0, 0, sortMemCost)
   }
 
+  //~ ExecNode methods -----------------------------------------------------------
+
   /**
     * Now must be full dam without two input operator chain.
     * TODO two input operator chain will return different value.
     */
-  override def getDamBehavior: DamBehavior = {
-    DamBehavior.FULL_DAM
-  }
+  override def getDamBehavior: DamBehavior = DamBehavior.FULL_DAM
 
   override def getInputNodes: util.List[ExecNode[BatchTableEnvironment, _]] =
     getInputs.map(_.asInstanceOf[ExecNode[BatchTableEnvironment, _]])
+
+  override def replaceInputNode(
+      ordinalInParent: Int,
+      newInputNode: ExecNode[BatchTableEnvironment, _]): Unit = {
+    replaceInput(ordinalInParent, newInputNode.asInstanceOf[RelNode])
+  }
 
   override def translateToPlanInternal(
       tableEnv: BatchTableEnvironment): StreamTransformation[BaseRow] = {
@@ -172,14 +201,7 @@ trait BatchExecSortMergeJoinBase extends BatchExecJoinBase with BatchExecNode[Ba
       sortMemory,
       sortMemory,
       externalBufferMemory,
-      flinkJoinType match {
-        case FlinkJoinRelType.INNER => SortMergeJoinOperator.SortMergeJoinType.INNER
-        case FlinkJoinRelType.LEFT => SortMergeJoinOperator.SortMergeJoinType.LEFT
-        case FlinkJoinRelType.RIGHT => SortMergeJoinOperator.SortMergeJoinType.RIGHT
-        case FlinkJoinRelType.FULL => SortMergeJoinOperator.SortMergeJoinType.FULL
-        case FlinkJoinRelType.SEMI => SortMergeJoinOperator.SortMergeJoinType.SEMI
-        case FlinkJoinRelType.ANTI => SortMergeJoinOperator.SortMergeJoinType.ANTI
-      },
+      flinkJoinType,
       estimateOutputSize(getLeft) < estimateOutputSize(getRight),
       condFunc,
       generateProjection(
@@ -227,34 +249,4 @@ object SortMergeJoinType extends Enumeration {
   SortRightJoin,
   // both LHS and RHS need sort
   SortMergeJoin = Value
-}
-
-class BatchExecSortMergeJoin(
-    cluster: RelOptCluster,
-    traitSet: RelTraitSet,
-    leftRel: RelNode,
-    rightRel: RelNode,
-    condition: RexNode,
-    joinType: JoinRelType,
-    override val leftSorted: Boolean,
-    override val rightSorted: Boolean)
-  extends Join(cluster, traitSet, leftRel, rightRel, condition, Set.empty[CorrelationId], joinType)
-  with BatchExecSortMergeJoinBase {
-
-  override def copy(
-      traitSet: RelTraitSet,
-      conditionExpr: RexNode,
-      left: RelNode,
-      right: RelNode,
-      joinType: JoinRelType,
-      semiJoinDone: Boolean): Join =
-    new BatchExecSortMergeJoin(
-      cluster,
-      traitSet,
-      left,
-      right,
-      conditionExpr,
-      joinType,
-      leftSorted,
-      rightSorted)
 }

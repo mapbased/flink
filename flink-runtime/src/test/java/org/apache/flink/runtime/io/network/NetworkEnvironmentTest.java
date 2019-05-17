@@ -18,20 +18,13 @@
 
 package org.apache.flink.runtime.io.network;
 
-import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.io.network.partition.InputChannelTestUtils;
-import org.apache.flink.runtime.io.network.partition.NoOpResultPartitionConsumableNotifier;
+import org.apache.flink.runtime.io.network.partition.PartitionTestUtils;
 import org.apache.flink.runtime.io.network.partition.ResultPartition;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionManager;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.io.network.partition.consumer.RemoteInputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.SingleInputGate;
-import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
-import org.apache.flink.runtime.taskmanager.NetworkEnvironmentConfigurationBuilder;
-import org.apache.flink.runtime.taskmanager.NoOpTaskActions;
 import org.apache.flink.runtime.taskmanager.Task;
 
 import org.junit.Rule;
@@ -75,10 +68,9 @@ public class NetworkEnvironmentTest {
 	 */
 	@Test
 	public void testRegisterTaskUsesBoundedBuffers() throws Exception {
-		final NetworkEnvironment network = new NetworkEnvironment(new NetworkEnvironmentConfigurationBuilder()
+		final NetworkEnvironment network = new NetworkEnvironmentBuilder()
 			.setIsCreditBased(enableCreditBasedFlowControl)
-			.build(),
-			new TaskEventDispatcher());
+			.build();
 
 		// result partitions
 		ResultPartition rp1 = createResultPartition(ResultPartitionType.PIPELINED, 2);
@@ -181,11 +173,10 @@ public class NetworkEnvironmentTest {
 	}
 
 	private void testRegisterTaskWithLimitedBuffers(int bufferPoolSize) throws Exception {
-		final NetworkEnvironment network = new NetworkEnvironment(new NetworkEnvironmentConfigurationBuilder()
+		final NetworkEnvironment network = new NetworkEnvironmentBuilder()
 			.setNumNetworkBuffers(bufferPoolSize)
 			.setIsCreditBased(enableCreditBasedFlowControl)
-			.build(),
-			new TaskEventDispatcher());
+			.build();
 
 		final ConnectionManager connManager = createDummyConnectionManager();
 
@@ -280,18 +271,8 @@ public class NetworkEnvironmentTest {
 	 */
 	private static ResultPartition createResultPartition(
 			final ResultPartitionType partitionType, final int channels) {
-		return new ResultPartition(
-			"TestTask-" + partitionType + ":" + channels,
-			new NoOpTaskActions(),
-			new JobID(),
-			new ResultPartitionID(),
-			partitionType,
-			channels,
-			channels,
-			mock(ResultPartitionManager.class),
-			new NoOpResultPartitionConsumableNotifier(),
-			mock(IOManager.class),
-			false);
+
+		return PartitionTestUtils.createPartition(partitionType, channels);
 	}
 
 	/**
@@ -322,7 +303,7 @@ public class NetworkEnvironmentTest {
 			connManager,
 			0,
 			0,
-			UnregisteredMetricGroups.createUnregisteredTaskMetricGroup().getIOMetricGroup());
+			InputChannelTestUtils.newUnregisteredInputChannelMetrics());
 		inputGate.setInputChannel(resultPartition.getPartitionId().getPartitionId(), channel);
 	}
 }

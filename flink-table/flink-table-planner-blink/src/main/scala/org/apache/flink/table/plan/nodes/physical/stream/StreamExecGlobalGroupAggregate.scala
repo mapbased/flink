@@ -98,8 +98,16 @@ class StreamExecGlobalGroupAggregate(
         isGlobal = true))
   }
 
+  //~ ExecNode methods -----------------------------------------------------------
+
   override def getInputNodes: util.List[ExecNode[StreamTableEnvironment, _]] = {
     getInputs.map(_.asInstanceOf[ExecNode[StreamTableEnvironment, _]])
+  }
+
+  override def replaceInputNode(
+      ordinalInParent: Int,
+      newInputNode: ExecNode[StreamTableEnvironment, _]): Unit = {
+    replaceInput(ordinalInParent, newInputNode.asInstanceOf[RelNode])
   }
 
   override protected def translateToPlanInternal(
@@ -204,12 +212,11 @@ class StreamExecGlobalGroupAggregate(
       CodeGeneratorContext(config),
       relBuilder,
       FlinkTypeFactory.toInternalRowType(inputRowType).getFieldTypes,
-      needRetract = false,
-      config.getNullCheck,
       inputFieldCopy)
 
     generator
-      .withMerging(mergedAccOffset, mergedAccOnHeap, mergedAccExternalTypes)
+      .needAccumulate()
+      .needMerge(mergedAccOffset, mergedAccOnHeap, mergedAccExternalTypes)
       .generateAggsHandler(name, aggInfoList)
   }
 
