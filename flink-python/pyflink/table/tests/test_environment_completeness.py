@@ -16,11 +16,13 @@
 # limitations under the License.
 ################################################################################
 
+import unittest
+
 from pyflink.testing.test_case_utils import PythonAPICompletenessTestCase
 from pyflink.table import TableEnvironment
 
 
-class EnvironmentAPICompletenessTests(PythonAPICompletenessTestCase):
+class EnvironmentAPICompletenessTests(PythonAPICompletenessTestCase, unittest.TestCase):
     """
     Tests whether the Python :class:`TableEnvironment` is consistent with
     Java `org.apache.flink.table.api.TableEnvironment`.
@@ -39,7 +41,7 @@ class EnvironmentAPICompletenessTests(PythonAPICompletenessTestCase):
         # registerExternalCatalog, getRegisteredExternalCatalog and listTables
         # should be supported when catalog supported in python.
         # getCompletionHints has been deprecated. It will be removed in the next release.
-        return {'registerExternalCatalog', 'getRegisteredExternalCatalog', 'connect',
+        return {'registerExternalCatalog', 'getRegisteredExternalCatalog',
                 'registerFunction', 'listUserDefinedFunctions', 'listTables', 'getCompletionHints'}
 
 

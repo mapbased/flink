@@ -16,26 +16,34 @@
  * limitations under the License.
  */
 
-package org.apache.flink.table.typeutils;
+package org.apache.flink.table.catalog;
 
-import org.apache.flink.annotation.Internal;
+import java.util.Map;
+
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * Type information for row intervals.
+ * An abstract class representing a database in a catalog.
  */
-@Internal
-public final class RowIntervalTypeInfo extends InternalTypeInfo<Long> {
+public abstract class AbstractCatalogDatabase implements CatalogDatabase {
+	// Property of the database
+	private final Map<String, String> properties;
+	// Comment of the database
+	private final String comment;
 
-	private static final long serialVersionUID = -1306179424364925258L;
-
-	public static final RowIntervalTypeInfo INTERVAL_ROWS = new RowIntervalTypeInfo();
-
-	private RowIntervalTypeInfo() {
-		super(Long.class);
+	public AbstractCatalogDatabase(Map<String, String> properties, String comment) {
+		this.properties = checkNotNull(properties, "properties cannot be null");
+		this.comment = comment;
 	}
 
 	@Override
-	public boolean canEqual(Object obj) {
-		return obj instanceof RowIntervalTypeInfo;
+	public Map<String, String> getProperties() {
+		return properties;
 	}
+
+	@Override
+	public String getComment() {
+		return comment;
+	}
+
 }
